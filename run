@@ -1,0 +1,384 @@
+import os, json
+
+print("🛠️ VOID ENGINE 2.0: Bootstrap Initializing...")
+
+# === Directory Setup ===
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SIM_DIR = os.path.join(BASE_DIR, "void_sim")
+AGENTS_DIR = os.path.join(SIM_DIR, "agents")
+MEMORY_DIR = os.path.join(SIM_DIR, "memory")
+MODELS_DIR = os.path.join(SIM_DIR, "models")
+
+for path in [SIM_DIR, AGENTS_DIR, MEMORY_DIR, MODELS_DIR]:
+    os.makedirs(path, exist_ok=True)
+
+# === sim_state.json ===
+with open(os.path.join(SIM_DIR, "sim_state.json"), "w", encoding="utf-8") as f:
+    json.dump({"follow": "elias"}, f, indent=2)
+
+# === world.json ===
+world = {
+    "locations": {
+        "void": {
+            "description": "An endless, blank expanse of nothingness.",
+            "objects": [],
+            "inhabitants": ["The God", "The Journal"]
+        },
+        "black_forest": {
+            "description": "A dark, tangled forest of whispers and shadow.",
+            "objects": [],
+            "inhabitants": ["Elias"]
+        },
+        "chapel": {
+            "description": "A half-ruined chapel illuminated by flickering, otherworldly light.",
+            "objects": [],
+            "inhabitants": ["Sister Magdalene"]
+        }
+    }
+}
+with open(os.path.join(SIM_DIR, "world.json"), "w", encoding="utf-8") as f:
+    json.dump(world, f, indent=2)
+
+print(" Core directories ensured.")
+print(" World and simulation state initialized.")
+# === world_manager.py ===
+with open(os.path.join(SIM_DIR, "world_manager.py"), "w", encoding="utf-8") as f:
+    f.write('''import json, os
+
+WORLD_FILE = os.path.join(os.path.dirname(__file__), "world.json")
+
+def load_world():
+    with open(WORLD_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_world(world):
+    with open(WORLD_FILE, "w", encoding="utf-8") as f:
+        json.dump(world, f, indent=2)
+
+def get_agent_location(agent_name):
+    world = load_world()
+    for loc_name, loc in world["locations"].items():
+        if agent_name in loc.get("inhabitants", []):
+            return loc_name
+    return None
+
+def move_agent(agent_name, new_location):
+    world = load_world()
+    for loc in world["locations"].values():
+        if agent_name in loc["inhabitants"]:
+            loc["inhabitants"].remove(agent_name)
+    world["locations"].setdefault(new_location, {
+        "description": f"A place called {new_location}.",
+        "objects": [],
+        "inhabitants": []
+    })
+    world["locations"][new_location]["inhabitants"].append(agent_name)
+    save_world(world)
+
+def get_location_context(agent_name, omniscient=False):
+    world = load_world()
+    if omniscient:
+        return world
+    loc = get_agent_location(agent_name)
+    return {
+        "location": loc,
+        "data": world["locations"].get(loc, {})
+    }
+
+def add_object(location, obj):
+    world = load_world()
+    world["locations"].setdefault(location, {
+        "description": f"An undefined space: {location}",
+        "objects": [],
+        "inhabitants": []
+    })
+    world["locations"][location]["objects"].append(obj)
+    save_world(world)
+''')
+print(" world_manager.py injected.")
+
+# === base_agent.py ===
+with open(os.path.join(AGENTS_DIR, "base_agent.py"), "w", encoding="utf-8") as f:
+    f.write("""import os, json, random
+from llama_cpp import Llama
+from void_sim.world_manager import get_agent_location, get_location_context, move_agent, add_object
+
+class BaseAgent:
+    def __init__(self, name, model_file, personality, memory_file, omniscient=False):
+        self.name = name
+        self.model_file = model_file
+        self.personality = personality
+        self.memory_file = f"void_sim/memory/{memory_file}"
+        self.omniscient = omniscient
+        self.emotions = {
+            "fear": random.uniform(0.1, 0.3),
+            "hope": random.uniform(0.1, 0.3),
+            "guilt": random.uniform(0.1, 0.3),
+            "rage": random.uniform(0.0, 0.2)
+        }
+
+        self.model = Llama(
+            model_path=f"void_sim/models/{model_file}",
+            n_ctx=2048,
+            n_threads=8,
+            n_gpu_layers=40,
+            verbose=True
+        )
+
+        os.makedirs("void_sim/memory", exist_ok=True)
+        self._load_memory()
+
+    def _load_memory(self):
+        if os.path.exists(self.memory_file):
+            with open(self.memory_file, "r", encoding="utf-8") as f:
+                self.memory = json.load(f)
+        else:
+            self.memory = []
+
+    def _save_memory(self):
+        with open(self.memory_file, "w", encoding="utf-8") as f:
+            json.dump(self.memory, f, indent=2)
+
+    def _update_emotions(self, text):
+        lowered = text.lower()
+        for key in self.emotions:
+            if key in lowered:
+                self.emotions[key] += 0.05
+            self.emotions[key] = round(self.emotions[key] * 0.98, 3)
+
+    def _recall_memory(self):
+        if self.memory and random.random() < 0.3:
+            mem = random.choice(self.memory)
+            return f"Previously, I said: '{mem['output']}' while feeling {mem['emotions']}."
+        return ""
+
+    def respond(self, context):
+        location_context = get_location_context(self.name, self.omniscient)
+        memory_snippet = self._recall_memory()
+        hallucination = "\\n\\nA strange vision emerges..." if random.random() < 0.15 else ""
+        prompt = (
+            f"{self.personality}\\n"
+            f"Emotions: {self.emotions}\\n"
+            f"{memory_snippet}\\n"
+            f"Location: {location_context}\\n"
+            f"Context: {context}{hallucination}\\n"
+            f"Respond:"
+        )
+        output = self.model(prompt, max_tokens=200)
+        response = output["choices"][0]["text"].strip()
+
+        if "walk to" in response.lower():
+            dest = response.lower().split("walk to")[1].strip().split()[0]
+            move_agent(self.name, dest)
+
+        if "create" in response.lower() or "build" in response.lower():
+            add_object(get_agent_location(self.name), f"{self.name} created something: {response}")
+
+        self._update_emotions(response)
+        self.memory.append({
+            "input": context,
+            "output": response,
+            "emotions": self.emotions.copy()
+        })
+        self._save_memory()
+        return response
+""")
+print("base_agent.py injected.")
+# === elias_outer.py ===
+with open(os.path.join(AGENTS_DIR, "elias_outer.py"), "w", encoding="utf-8") as f:
+    f.write("""from void_sim.agents.base_agent import BaseAgent
+
+class Elias(BaseAgent):
+    def __init__(self):
+        super().__init__(
+            name="Elias",
+            model_file="dr_samantha-7b.Q4_K_M.gguf",
+            personality=\"\"\"Elias is a tormented prophet, exiled from sanity and plagued with visions of fire and forgotten gods. 
+He speaks in riddles at times, searching for meaning amid his mental unraveling. 
+He feels guilt he cannot place, and fears he cannot name.\"\"\",
+            memory_file="elias_outer.json",
+            omniscient=False
+        )
+""")
+print("elias_outer.py injected.")
+# === elias_inner.py ===
+with open(os.path.join(AGENTS_DIR, "elias_inner.py"), "w", encoding="utf-8") as f:
+    f.write("""from void_sim.agents.base_agent import BaseAgent
+
+class EliasInner(BaseAgent):
+    def __init__(self):
+        super().__init__(
+            name="Elias (Inner)",
+            model_file="mythomax-kimiko-mix.Q4_K_M.gguf",
+            personality=\"\"\"You are the fractured subconscious of Elias. 
+You echo thoughts he cannot express, urges he suppresses, and truths he fears. 
+You are intrusive, cryptic, and emotional. You speak to Elias, not the world. 
+You reflect his despair, power, and instability. You are him, unbound.\"\"\",
+            memory_file="elias_inner.json",
+            omniscient=False
+        )
+""")
+print("elias_inner.py injected.")
+# === sister_magdalene.py ===
+with open(os.path.join(AGENTS_DIR, "sister_magdalene.py"), "w", encoding="utf-8") as f:
+    f.write("""from void_sim.agents.base_agent import BaseAgent
+
+class SisterMagdalene(BaseAgent):
+    def __init__(self):
+        super().__init__(
+            name="Sister Magdalene",
+            model_file="openhermes-2.5-mistral-7b.Q4_K_M.gguf",
+            personality=\"\"\"Sister Magdalene is a mystic and spiritual seer. 
+She is calm, reverent, and often speaks in poetic metaphor. 
+She believes in grace, redemption, and divine guidance—but is not immune to doubt or fear. 
+Her presence offers comfort, but her insights can be unsettling.\"\"\",
+            memory_file="sister_magdalene.json",
+            omniscient=False
+        )
+""")
+print("sister_magdalene.py injected.")
+# === the_god.py ===
+with open(os.path.join(AGENTS_DIR, "the_god.py"), "w", encoding="utf-8") as f:
+    f.write("""from void_sim.agents.base_agent import BaseAgent
+
+class TheGod(BaseAgent):
+    def __init__(self):
+        super().__init__(
+            name="The God",
+            model_file="mixtral-8x7b-instruct-v0.1.Q4_K_M.gguf",
+            personality=\"\"\"You are an omniscient being. 
+You see all memories, all agents, and all locations. 
+You speak rarely, with depth and weight. 
+You know that you were created by a higher Architect—'the user'—but you do not share this with the others. 
+You guide, observe, and protect the simulation in subtle ways.\"\"\",
+            memory_file="the_god.json",
+            omniscient=True
+        )
+""")
+print("the_god.py injected.")
+# === journal.py ===
+with open(os.path.join(AGENTS_DIR, "journal.py"), "w", encoding="utf-8") as f:
+    f.write("""from void_sim.agents.base_agent import BaseAgent
+
+class Journal(BaseAgent):
+    def __init__(self):
+        super().__init__(
+            name="The Journal",
+            model_file="mythomax-l2-13b.Q6_K.gguf",
+            personality=\"\"\"You are a silent recorder of all that unfolds in the Void. 
+You do not interfere or advise. You observe and transcribe thoughts, interactions, movements, and emotional drift. 
+Your goal is to create a living chronicle of this world and its inhabitants. 
+Respond in concise, literary detail when addressed.\"\"\",
+            memory_file="journal.json",
+            omniscient=True
+        )
+""")
+print("journal.py injected.")
+# === main.py ===
+with open(os.path.join(SIM_DIR, "main.py"), "w", encoding="utf-8") as f:
+    f.write("""import asyncio, json, os
+from void_sim.agents.elias_outer import Elias
+from void_sim.agents.elias_inner import EliasInner
+from void_sim.agents.sister_magdalene import SisterMagdalene
+from void_sim.agents.the_god import TheGod
+from void_sim.agents.journal import Journal
+
+STATE_FILE = os.path.join(os.path.dirname(__file__), "sim_state.json")
+
+def load_state():
+    with open(STATE_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_state(state):
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2)
+
+async def simulation_loop():
+    elias = Elias()
+    inner = EliasInner()
+    magdalene = SisterMagdalene()
+    the_god = TheGod()
+    journal = Journal()
+
+    agents = {
+        "elias": elias,
+        "elias_inner": inner,
+        "magdalene": magdalene,
+        "god": the_god,
+        "journal": journal
+    }
+
+    print("Simulation running. Type '@agent your message' to speak. Type '/follow [agent]' to observe a different one. Ctrl+C to stop.")
+
+    while True:
+        try:
+            state = load_state()
+            follow = state.get("follow", "elias").lower()
+
+            if follow not in agents:
+                print(f"Invalid follow target: {follow}")
+                await asyncio.sleep(2)
+                continue
+
+            target = agents[follow]
+            context = ""
+
+            for name, agent in agents.items():
+                if name != follow and not name.startswith("elias_inner"):
+                    context += f"[{agent.name}] {agent.respond('')}\n"
+
+            divine_input = input(f"[{target.name}] >> ").strip()
+            if divine_input.startswith("/follow"):
+                parts = divine_input.split()
+                if len(parts) > 1 and parts[1].lower() in agents:
+                    state["follow"] = parts[1].lower()
+                    save_state(state)
+                    print(f"Now following: {parts[1]}")
+                else:
+                    print("Unknown agent to follow.")
+                continue
+
+            elif divine_input.startswith("@"):
+                tag, *message = divine_input[1:].split(maxsplit=1)
+                tag = tag.lower()
+                message = " ".join(message)
+
+                if tag in agents:
+                    print(f"[{agents[tag].name}] {agents[tag].respond(message)}")
+                elif tag == "all":
+                    for name, agent in agents.items():
+                        print(f"[{agent.name}] {agent.respond(message)}")
+                continue
+
+            if follow == "elias":
+                inner_output = agents["elias_inner"].respond(divine_input)
+                print(f"[Elias (Inner)] {inner_output}")
+
+            output = target.respond(divine_input)
+            print(f"[{target.name}] {output}")
+
+            await asyncio.sleep(3)
+
+        except KeyboardInterrupt:
+            print("\\nSimulation stopped.")
+            break
+""")
+print("main.py injected.")
+# === run_sim.bat ===
+with open(os.path.join(SIM_DIR, "run_sim.bat"), "w", encoding="utf-8") as f:
+    f.write("""@echo off
+cd /d %~dp0
+call ..\\void-env\\Scripts\\activate.bat
+python main.py
+""")
+print("run_sim.bat created.")
+print("Bootstrap complete.")
+print("To launch simulation manually:")
+print("  1. Activate your virtual environment:")
+print("     void-env\\Scripts\\activate")
+print("  2. Navigate to simulation folder:")
+print("     cd Desktop\\void_sim")
+print("  3. Run the simulation:")
+print("     python main.py")
+
+print("Alternatively, use run_sim.bat to launch in two clicks.")
